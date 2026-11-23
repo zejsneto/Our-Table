@@ -1,0 +1,78 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────
+//  Our Table — regras de segurança do Firestore
+//  Só quem tem um documento em /members/{uid} lê ou grava.
+//  A coleção "members" é editada SOMENTE pelo Console do Firebase.
+// ─────────────────────────────────────────────────────────────
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMember() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/members/$(request.auth.uid));
+    }
+
+    function str(v, max) {
+      return v is string && v.size() <= max;
+    }
+
+    // Cada pessoa só pode criar/alterar a PRÓPRIA nota dentro de "ratings"
+    function onlyOwnRating() {
+      let before = resource.data.get('ratings', {});
+      let after = request.resource.data.get('ratings', {});
+      return after.diff(before).affectedKeys().hasOnly([request.auth.uid]);
+    }
+
+    match /members/{uid} {
+      allow read: if isMember();
+      allow write: if false;
+    }
+
+    match /places/{id} {
+      allow read: if isMember();
+      allow create, update: if isMember()
+        && str(request.resource.data.name, 120)
+        && request.resource.data.name.size() > 0
+        && request.resource.data.kind in ['restaurante', 'delivery']
+        && (!('cover' in request.resource.data)
+            || request.resource.data.cover == null
+            || str(request.resource.data.cover, 400000));
+      allow delete: if isMember();
+    }
+
+    match /visits/{id} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.placeId is string
+        && request.resource.data.kind in ['restaurante', 'delivery']
+        && request.resource.data.date is string;
+      allow update: if isMember() && onlyOwnRating();
+      allow delete: if isMember();
+    }
+
+    // Miniaturas das fotos (base64)
+    match /photos/{id} {
+      allow read, delete: if isMember();
+      allow create, update: if isMember()
+        && str(request.resource.data.thumb, 400000)
+        && request.resource.data.visitId is string;
+    }
+
+    // Fotos em tamanho original (base64)
+    match /photoData/{id} {
+      allow read, delete: if isMember();
+      allow create, update: if isMember()
+        && str(request.resource.data.data, 1000000);
+    }
+
+    // Qualquer outra coleção: bloqueada
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
